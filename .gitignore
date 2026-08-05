@@ -1,0 +1,8 @@
+# extracted feature caches (regenerated via extract_features.py)
+feats/
+
+# runtime
+__pycache__/
+*.pyc
+logs/
+results_*.csv
