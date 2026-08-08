@@ -111,31 +111,23 @@ class LowRankLDASelfTrain(BaseMethod):
         mu = self.Sc / self.Nc.clamp_min(1e-8).unsqueeze(1)      # [C, D]
         n = max(self.n_cc, 1)
         k = self.rank
-        if self.l == k:
-            # l=k mode: FD's SVD already gives the eigen-decomposition, so
-            # A = S^T / sqrt(n) directly (no second eigh).
-            A = self.S.t() / (n ** 0.5)                          # [D, k]
-            lam_sum = (self.S * self.S).sum() / n                # trace(AA^T)
-            sigma2 = ((self.total_var.sum() / n) - lam_sum) / (self.D - k)
-            sigma2 = float(sigma2.clamp_min(self.jitter))
-        else:
-            # l=2k mode: re-decompose S S^T to extract the top-k eigen-pairs.
-            SS = self.S @ self.S.t()                             # [l, l]
-            ev, evec = torch.linalg.eigh(SS)                     # ascending
-            ev = ev.clamp_min(0.0) / n
-            Vk = self.S.t() @ evec[:, -k:]                       # [D, k]
-            Vk = Vk / Vk.norm(dim=0).clamp_min(1e-8)             # unit
-            lam = ev[-k:]                                        # [k] top eigvals
-            A = Vk * lam.sqrt().unsqueeze(0)                     # AA^T = sum lam_i e_i e_i^T
-            sigma2 = ((self.total_var.sum() / n) - lam.sum()) / (self.D - k)
-            sigma2 = float(sigma2.clamp_min(self.jitter))
+        # S's rows are orthogonal (SVD-guaranteed in update) and sig2 is descending, so
+        # S S^T = diag(sig2[:l]) and the top-k subspace = the first k rows of S. This makes
+        # eigh(SS) redundant (opt A) and A^T A diagonal (opt B). l=k and l=2k unify: both
+        # take Sk = S[:k] (l=k: S[:k]=S; l=2k: top-k = first k rows).
+        Sk = self.S[:k]                                          # [k, D]
+        A = Sk.t() / (n ** 0.5)                                  # [D, k]
+        lam = (Sk * Sk).sum(1) / n                               # [k] = diag(A^T A)
+        sigma2 = ((self.total_var.sum() / n) - lam.sum()) / (self.D - k)
+        sigma2 = float(sigma2.clamp_min(self.jitter))
 
         # Woodbury: Sigma^{-1} = sigma^{-2} I - sigma^{-4} A (I + sigma^{-2} A^T A)^{-1} A^T.
-        M = self._eye_k + (1.0 / sigma2) * (A.t() @ A)           # [k, k]
-        Minv = torch.inverse(M)
+        # M = I + (1/sigma2) A^T A is diagonal (= I + (1/sigma2) diag(lam)) -> elementwise
+        # inverse; muA @ Minv becomes muA * Minv (O(Ck) vs O(Ck^2)).
+        Minv = 1.0 / (1.0 + lam / sigma2)                        # [k] elementwise (opt B)
         muA = mu @ A                                             # [C, k]
         xA = x @ A                                               # [k]
-        muAx = (muA @ Minv) @ xA                                 # [C]
+        muAx = (muA * Minv) @ xA                                 # [C]
         muPx = (1.0 / sigma2) * (mu @ x - (1.0 / sigma2) * muAx)
-        muPmu = (1.0 / sigma2) * ((mu * mu).sum(1) - (1.0 / sigma2) * ((muA @ Minv) * muA).sum(1))
+        muPmu = (1.0 / sigma2) * ((mu * mu).sum(1) - (1.0 / sigma2) * ((muA * Minv) * muA).sum(1))
         return muPx - 0.5 * muPmu    # score_c = mu_c^T Sigma^{-1} x - 0.5 mu_c^T Sigma^{-1} mu_c
