@@ -78,19 +78,27 @@ class LowRankLDASelfTrain(BaseMethod):
             p_lda = torch.softmax(self.predict(x) / self.temp, dim=0)
             w = (self.Nc / self.n_ref).clamp(0.0, 1.0)     # [C] 1 = full LDA trust
             s_mix = w * p_lda + (1 - w) * s                # mixed soft label
+            c = int(s_mix.argmax())
+            w_c = s_mix[c].clamp_min(0.0)                  # weight mass on the centering class
+            mu_c_old = self.Sc[c] / self.Nc[c].clamp_min(1e-8)
+            Nc_old = self.Nc[c]
             self.Sc += s_mix.unsqueeze(1) * x.unsqueeze(0)
             self.Nc += s_mix
-            c = int(s_mix.argmax())
-            mu_c = self.Sc[c] / self.Nc[c].clamp_min(1e-8)
         else:
             # streaming: CLIP soft-label weighted mean accumulation.
             c = int(s.argmax())
+            w_c = s[c].clamp_min(0.0)
+            mu_c_old = self.Sc[c] / self.Nc[c].clamp_min(1e-8)
+            Nc_old = self.Nc[c]
             self.Sc += s.unsqueeze(1) * x.unsqueeze(0)
             self.Nc += s
-            mu_c = self.Sc[c] / self.Nc[c].clamp_min(1e-8)
 
-        # Center by the current estimate of the sample's class mean, then sketch.
-        xp = x - mu_c
+        # Welford unbiased scatter increment: center at the OLD (pre-update) mean and
+        # scale by sqrt(N_old*w/(N_old+w)) so the accumulated scatter equals the exact
+        # within-class scatter at the FINAL mean - no drift, no need to re-center the
+        # FD-compressed history (fixes the eurosat streaming-approx centering drift).
+        wf = torch.sqrt((Nc_old * w_c / (Nc_old + w_c)).clamp_min(1e-12))
+        xp = wf * (x - mu_c_old)
         self.total_var += xp * xp
         self.n_cc += 1
         self.buffer[self.buf_count] = xp
