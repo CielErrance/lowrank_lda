@@ -30,7 +30,7 @@ fi
 PIDS=()
 for gpu in "${!SHARDS[@]}"; do
   echo "[run_all] gpu${gpu}: ${SHARDS[$gpu]}"
-  $PY run.py --gpu "$gpu" --datasets ${SHARDS[$gpu]} --tag "shard${gpu}" \
+  $PY fg10_online.py --gpu "$gpu" --datasets ${SHARDS[$gpu]} --tag "shard${gpu}" \
       "${ROOT_ARGS[@]}" > "logs/shard${gpu}.log" 2>&1 &
   PIDS+=($!)
 done

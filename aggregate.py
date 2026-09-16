@@ -1,6 +1,6 @@
 #!/usr/bin/env python
-"""Merge per-shard result CSVs (results_lowrank_selftrain_shard*.csv) into one
-full FG10 row and write results_lowrank_selftrain_all.csv."""
+"""Merge per-shard result CSVs (results_lowrank_lda_shard*.csv) into one
+full FG10 row and write results_lowrank_lda_all.csv."""
 from __future__ import annotations
 
 import csv
@@ -10,7 +10,7 @@ import os
 from data import DATASETS
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-METHOD = 'lowrank_selftrain'
+METHOD = 'lowrank_lda'
 
 
 def main():

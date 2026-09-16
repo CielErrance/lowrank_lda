@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Self-contained data loading for the lowrank_selftrain method.
+"""Self-contained data loading for the lowrank_lda method.
 
 Features are read from this repo's ``feats/`` cache (produced by
 ``extract_features.py``) and CLIP text prototypes from the bundled

@@ -2,12 +2,11 @@
 """Run the standalone low-rank LDA + self-train method over the FG10 datasets.
 
 bs=1 stream, update-then-predict, no ground-truth labels, no training data.
-Writes a per-run CSV (results_lowrank_selftrain[_tag].csv). To parallelize
+Writes a per-run CSV (results_lowrank_lda[_tag].csv). To parallelize
 across GPUs, launch several invocations with --tag and disjoint --datasets,
 then merge them with aggregate.py (or just use run_all.sh).
 
-Default configuration is the production selftrain setting
-(rank=64, sketch=2 => l=2k, mu=selftrain, nref=200, temp=2.0).
+Default configuration: rank=64, sketch=1 (l=k), streaming soft-label update.
 """
 from __future__ import annotations
 
@@ -20,23 +19,21 @@ import torch
 from tqdm import tqdm
 
 from data import DATASETS, FEATS_DIR, load_stream, write_result_row
-from method import LowRankLDASelfTrain
+from method import LowRankLDA
 from extract_features import extract_and_cache
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-METHOD_NAME = 'lowrank_selftrain'
+METHOD_NAME = 'lowrank_lda'
 
 
 @torch.no_grad()
-def run_dataset(dataset, device, feats_dir, warmup_frac, rank, sketch,
-                mu_mode, temp, n_ref):
+def run_dataset(dataset, device, feats_dir, warmup_frac, rank, sketch):
     feats, targets, W, soft = load_stream(dataset, device, feats_dir)
     N, D = feats.shape
     C = W.shape[0]
     warmup = max(8, int(warmup_frac * C))
-    method = LowRankLDASelfTrain(C, D, device, warmup, rank=rank,
-                                 sketch_mult=sketch, mu_mode=mu_mode,
-                                 temp=temp, n_ref=n_ref)
+    method = LowRankLDA(C, D, device, warmup, rank=rank,
+                                 sketch_mult=sketch)
 
     correct = 0
     lnC = float(np.log(C))
@@ -69,12 +66,6 @@ def main():
     ap.add_argument('--rank', type=int, default=64, help='low-rank factor A rank k')
     ap.add_argument('--sketch', type=int, default=2,
                     help='FD sketch multiplier: l=sketch*rank (2=l=2k, 1=l=k no eigh)')
-    ap.add_argument('--mu', default='selftrain', choices=['streaming', 'selftrain'],
-                    help="mean update: streaming (CLIP) or selftrain (online EM, nref)")
-    ap.add_argument('--temp', type=float, default=2.0,
-                    help='selftrain: LDA softmax temperature')
-    ap.add_argument('--nref', type=float, default=200,
-                    help='selftrain: per-class sample threshold for w_c')
     ap.add_argument('--tag', default=None,
                     help='suffix for results csv (results_<method>_<tag>.csv) to allow parallel shards')
     args = ap.parse_args()
@@ -83,8 +74,8 @@ def main():
     if torch.cuda.is_available():
         torch.cuda.set_device(args.gpu)
 
-    print(f'[run] method={METHOD_NAME} gpu={args.gpu} mu={args.mu} nref={args.nref} '
-          f'rank={args.rank} sketch={args.sketch} temp={args.temp} '
+    print(f'[run] method={METHOD_NAME} gpu={args.gpu} '
+          f'rank={args.rank} sketch={args.sketch} '
           f'warmup_frac={args.warmup_frac} datasets={args.datasets}')
 
     per_ds, nent_ds = {}, {}
@@ -99,8 +90,7 @@ def main():
                 continue
         t0 = time.time()
         acc, N, C, nent = run_dataset(ds, device, args.feats_dir, args.warmup_frac,
-                                      args.rank, args.sketch, args.mu,
-                                      args.temp, args.nref)
+                                      args.rank, args.sketch)
         per_ds[ds] = acc
         nent_ds[ds] = nent
         print(f'[run] {METHOD_NAME:16s} {ds:16s} acc={acc:6.2f}%  '
