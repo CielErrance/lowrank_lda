@@ -12,14 +12,16 @@ import argparse
 import numpy as np
 import torch
 
-sys.path.insert(0, '/home/liangyiwen/wufan/ADAPT')
+sys.path.insert(0, os.environ.get('ADAPT_ROOT', '/home/liangyiwen/wufan/ADAPT'))
 from clip import clip as clip_pkg  # noqa: F401  （proto 加载无需模型，保留一致性）
-sys.path.insert(0, '/home/liangyiwen/wufan/lowrank_selftrain')
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # 本目录（method.py）
 from method import LowRankLDA
 
 C_PTH = {
-    'vit': '/home/liangyiwen/wufan/ADAPT/pre_extracted_class_feat/ViT-B16/GPT_w_Custom_class_emb/imagenet.pth',
-    'rn50': '/home/liangyiwen/wufan/ADAPT/pre_extracted_class_feat/RN50/GPT_w_Custom_class_emb/imagenet.pth',
+    'vit': os.path.join(os.environ.get('ADAPT_ROOT', '/home/liangyiwen/wufan/ADAPT'),
+                       'pre_extracted_class_feat/ViT-B16/GPT_w_Custom_class_emb/imagenet.pth'),
+    'rn50': os.path.join(os.environ.get('ADAPT_ROOT', '/home/liangyiwen/wufan/ADAPT'),
+                        'pre_extracted_class_feat/RN50/GPT_w_Custom_class_emb/imagenet.pth'),
 }
 C_OUT = {
     'vit': '/mnt/newdata/liangyiwen/imagenet_c_feats',

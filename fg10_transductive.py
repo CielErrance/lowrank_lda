@@ -24,8 +24,9 @@ import torch
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from method import LowRankLDA
 
-FE = '/home/liangyiwen/wufan/lowrank_selftrain/feats'
-PTH = '/home/liangyiwen/wufan/ADAPT/pre_extracted_class_feat/ViT-B16/GPT_w_Custom_class_emb'
+FE = os.environ.get('FG10_FEATS_DIR', '/home/liangyiwen/wufan/lowrank_selftrain/feats')
+PTH = os.path.join(os.environ.get('ADAPT_ROOT', '/home/liangyiwen/wufan/ADAPT'),
+                   'pre_extracted_class_feat/ViT-B16/GPT_w_Custom_class_emb')
 FG10 = ['fgvc_aircraft', 'caltech101', 'stanford_cars', 'dtd', 'eurosat',
         'oxford_flowers', 'food101', 'oxford_pets', 'sun397', 'ucf101']
 

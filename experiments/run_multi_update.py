@@ -12,8 +12,8 @@ import time
 import numpy as np
 import torch
 
-sys.path.insert(0, '/home/liangyiwen/wufan/lowrank_selftrain')
-from method import LowRankLDASelfTrain
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from method import LowRankLDA
 
 PTH_TEMPLATE = '/home/liangyiwen/wufan/ADAPT/pre_extracted_class_feat/{ARCH}/GPT_w_Custom_class_emb'
 FEATS_DIR = '/home/liangyiwen/wufan/ADAPT/feats'
@@ -32,8 +32,8 @@ def run(ds, gpu, rank, sketch, shrink, sigma_eps, warmup=64):
     dev = f'cuda:{gpu}'
     Fv, fmean, soft, tgt = Fv.to(dev), fmean.to(dev), soft.to(dev), tgt.to(dev)
 
-    m = LowRankLDASelfTrain(C, D, dev, warmup, rank=rank, sketch_mult=sketch,
-                            mu_mode='streaming', sigma_shrink=shrink, sigma_eps=sigma_eps)
+    m = LowRankLDA(C, D, dev, warmup, rank=rank, sketch_mult=sketch,
+                       sigma_shrink=shrink, sigma_eps=sigma_eps)
     ok = 0
     for t in range(N):
         s = soft[t]

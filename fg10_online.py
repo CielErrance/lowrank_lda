@@ -27,7 +27,8 @@ METHOD_NAME = 'lowrank_lda'
 
 
 @torch.no_grad()
-def run_dataset(dataset, device, feats_dir, warmup_frac, rank, sketch):
+def run_dataset(dataset, device, feats_dir, warmup_frac, rank, sketch,
+                hard_weight='none'):
     feats, targets, W, soft = load_stream(dataset, device, feats_dir)
     N, D = feats.shape
     C = W.shape[0]
@@ -40,6 +41,14 @@ def run_dataset(dataset, device, feats_dir, warmup_frac, rank, sketch):
     nent_sum = 0.0
     for t in tqdm(range(N), desc=f'{dataset}', leave=False):
         x, s = feats[t], soft[t]
+        if hard_weight != 'none':
+            c_hat = int(s.argmax())
+            # 质量集中到 pred 类；权重变体：cos=x·W[c]（feats/W 均已单位化）、
+            # prob=softmax 概率、one=恒 1（普通 Welford）
+            w = {'cos': x @ W[c_hat], 'prob': s[c_hat],
+                 'one': torch.ones((), device=x.device)}[hard_weight]
+            s = torch.zeros_like(s)
+            s[c_hat] = w
         nent_sum += float(-(s * s.clamp_min(1e-12).log()).sum().item())  # H(s_clip)
         method.update(x, s)
         if method.ready():
@@ -68,6 +77,8 @@ def main():
                     help='FD sketch multiplier: l=sketch*rank (2=l=2k, 1=l=k no eigh)')
     ap.add_argument('--tag', default=None,
                     help='suffix for results csv (results_<method>_<tag>.csv) to allow parallel shards')
+    ap.add_argument('--hard_weight', default='none', choices=['none', 'cos', 'one', 'prob'],
+                    help='none=软标签流式（默认）；cos/prob/one=质量集中到 pred 类的权重变体')
     args = ap.parse_args()
 
     device = f'cuda:{args.gpu}' if torch.cuda.is_available() else 'cpu'
@@ -90,7 +101,7 @@ def main():
                 continue
         t0 = time.time()
         acc, N, C, nent = run_dataset(ds, device, args.feats_dir, args.warmup_frac,
-                                      args.rank, args.sketch)
+                                      args.rank, args.sketch, args.hard_weight)
         per_ds[ds] = acc
         nent_ds[ds] = nent
         print(f'[run] {METHOD_NAME:16s} {ds:16s} acc={acc:6.2f}%  '

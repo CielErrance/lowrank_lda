@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """RN50 上对每个数据集一次性输出三路准确率：纯LDA / 原始CLIP(zero-shot) / DOTA加权融合。
 
-- LDA = LowRankLDASelfTrain (rank=64, streaming mu) —— 项目主推 low-rank 判别器。
+- LDA = LowRankLDA (rank=64, streaming mu) —— 项目主推 low-rank 判别器。
 - CLIP = zero-shot (100*x@W logits argmax)。
 - DOTA 融合 = clip_ll + clamp(rho*Nc.mean(), 0, eta) * lr_score，rho/eta 取官方 DOTA 超参
   (FG10 从 DOTA/configs/vit 各域 yaml；imagenet 系 = DOTA_RHO_ETA 即 lr_inet.py)。
@@ -17,7 +17,7 @@ import numpy as np
 import torch
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from method import LowRankLDASelfTrain
+from method import LowRankLDA
 
 W = '/home/liangyiwen/wufan'
 FE = f'{W}/ADAPT/feats/rn50'
@@ -68,7 +68,7 @@ def run_online(feats, tgt, Wt, gpu, rho, eta, warmup, rank, mu):
     feats = feats.to(dev); tgt = tgt.to(dev); Wt = Wt.to(dev)
     N, D = feats.shape
     C = Wt.shape[1]
-    m = LowRankLDASelfTrain(C, D, dev, warmup, rank=rank, sketch_mult=2, mu_mode=mu)
+    m = LowRankLDA(C, D, dev, warmup, rank=rank, sketch_mult=2)
     lda_ok = dota_ok = 0
     for t in range(N):
         x = feats[t]

@@ -15,14 +15,16 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, '/home/liangyiwen/wufan/lowrank_selftrain')
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # 本目录（method.py）
 from method import LowRankLDA
 from clip import clip as clip_pkg
 
-PTH_TEMPLATE = '/home/liangyiwen/wufan/ADAPT/pre_extracted_class_feat/{ARCH}/GPT_w_Custom_class_emb'
-FEATS_DIR = '/home/liangyiwen/wufan/ADAPT/feats'
-IFI = '/home/liangyiwen/wufan/.imagenet_feats'
+ADAPT_ROOT = os.environ.get('ADAPT_ROOT', '/home/liangyiwen/wufan/ADAPT')   # 文本原型/特征缓存所在
+PTH_TEMPLATE = os.path.join(ADAPT_ROOT,
+                            'pre_extracted_class_feat/{ARCH}/GPT_w_Custom_class_emb')
+PTH_TIER = 'GPT_w_Custom_class_emb'   # overridable via --pth_tier (prompt tier directory name)
+FEATS_DIR = os.path.join(ADAPT_ROOT, 'feats')
+IFI = os.environ.get('IMAGENET_FEATS_DIR', '/home/liangyiwen/wufan/.imagenet_feats')
 
 # DOTA's per-domain fusion schedule (rho = scale of w, eta = cap)
 DOTA_RHO_ETA = {'imagenet': (0.005, 0.2), 'imagenetv2': (0.01, 0.1),
@@ -35,14 +37,23 @@ ADAPT_SCALE = {'imagenet': 20.0, 'imagenetv2': 30.0, 'imagenet_sketch': 20.0,
 
 
 def load_data(ds, cache='singlev', arch='ViT-B16'):
-    pth_dir = PTH_TEMPLATE.format(ARCH=arch)
+    pth_dir = os.path.join(os.path.dirname(PTH_TEMPLATE.format(ARCH=arch)), PTH_TIER)
     feats_dir = os.path.join(FEATS_DIR, 'rn50') if arch == 'RN50' else FEATS_DIR
     if cache == 'aug63':
         d = np.load(os.path.join(FEATS_DIR, f'aug63_{ds}.npz'))
+        W = torch.load(os.path.join(pth_dir, f'{ds}.pth'), map_location='cpu').float()
+        if W.shape[0] != d['feats'].shape[1]:      # normalize to [D, C]
+            W = W.t()
+        # clip_ll cached at extraction time was computed with the Custom-tier W;
+        # recompute when running a different prompt tier so the fusion input
+        # matches the classifier in use (verified: cached ll == 100*feats@W_custom).
+        clip_ll = (100.0 * torch.from_numpy(d['feats']).float() @ W
+                   if PTH_TIER != 'GPT_w_Custom_class_emb'
+                   else torch.from_numpy(d['clip_ll']).float())
         return (torch.from_numpy(d['feats']).float(),
                 torch.from_numpy(d['targets']).long(),
-                torch.load(os.path.join(pth_dir, f'{ds}.pth'), map_location='cpu').float(),
-                torch.from_numpy(d['clip_ll']).float())
+                W,
+                clip_ll)
     if arch == 'RN50':
         npz = os.path.join(feats_dir, f'singlev_{ds}.npz')
     elif ds == 'imagenet':
@@ -61,7 +72,7 @@ def load_data(ds, cache='singlev', arch='ViT-B16'):
 @torch.no_grad()
 def run_dataset(ds, gpu, rank, sketch, warmup, fuse, rho, eta, cache,
                 shrink, sigma_eps, arch='ViT-B16', alpha=0.5, norm='minmax', mu_alpha=0.0,
-                gate=0.0, hard_assign=False):
+                gate=0.0, hard_assign=False, adapt_scale=None, hard_weight='cos'):
     if rho is None:                       # per-domain DOTA schedule
         rho, eta = DOTA_RHO_ETA[ds]
     device = f'cuda:{gpu}'
@@ -90,8 +101,11 @@ def run_dataset(ds, gpu, rank, sketch, warmup, fuse, rho, eta, cache,
         # E4 hard 分配：软标签质量集中于 pred 类（对齐 ADAPT img_pro[pred]·onehot 语义）
         if hard_assign:
             c_hat = int(soft.argmax())
+            w_hat = {'cos': clip_ll[c_hat] / 100.0,      # E4 原版：cos 相似度
+                     'one': torch.ones_like(clip_ll[c_hat]),   # 纯 hard：权重恒 1（普通 Welford）
+                     'prob': soft[c_hat]}[hard_weight]         # 概率版：softmax 概率（ADAPT bank 语义）
             soft = torch.zeros_like(soft)
-            soft[c_hat] = clip_ll[c_hat] / 100.0     # 保留该类概率作权重
+            soft[c_hat] = w_hat
         # E3 置信门限：仅高置信样本进统计量（模拟 ADAPT bank 低熵淘汰制）；gate=0 全收
         if gate <= 0.0 or float(soft.max()) >= gate:
             method.update(x, soft)
@@ -103,7 +117,8 @@ def run_dataset(ds, gpu, rank, sketch, warmup, fuse, rho, eta, cache,
                 final = alpha * mixnorm(clip_ll) + (1.0 - alpha) * mixnorm(lr_score)
                 pred = int(final.argmax())
             elif fuse == 'adaptmul':  # ADAPT 乘性: clip * exp(1/scale * log_softmax(lda))，无 cache 项
-                final = clip_ll * torch.exp(1.0 / ADAPT_SCALE[ds] * lr_score.log_softmax(0))
+                scale = adapt_scale if adapt_scale is not None else ADAPT_SCALE[ds]
+                final = clip_ll * torch.exp(1.0 / scale * lr_score.log_softmax(0))
                 pred = int(final.argmax())
             else:  # dotaclip
                 w = min(max(rho * float(method.Nc.mean()), 0.0), eta)
@@ -117,16 +132,17 @@ def run_dataset(ds, gpu, rank, sketch, warmup, fuse, rho, eta, cache,
 
 
 # ==================== ImageNet-C（--family inc）====================
-C_DATA = '/home/liangyiwen/datasets'
+C_DATA = os.environ.get('IMAGENET_C_DATA', '/home/liangyiwen/datasets')
 C_PTH = {
-    'vit': '/home/liangyiwen/wufan/ADAPT/pre_extracted_class_feat/ViT-B16/GPT_w_Custom_class_emb/imagenet.pth',
-    'rn50': '/home/liangyiwen/wufan/ADAPT/pre_extracted_class_feat/RN50/GPT_w_Custom_class_emb/imagenet.pth',
+    'vit': os.path.join(ADAPT_ROOT, 'pre_extracted_class_feat/ViT-B16/GPT_w_Custom_class_emb/imagenet.pth'),
+    'rn50': os.path.join(ADAPT_ROOT, 'pre_extracted_class_feat/RN50/GPT_w_Custom_class_emb/imagenet.pth'),
 }
 C_OUT = {
-    'vit': '/mnt/newdata/liangyiwen/imagenet_c_feats',        # ViT-B16 512-d
-    'rn50': '/mnt/newdata/liangyiwen/imagenet_c_feats_rn50',  # RN50 1024-d
+    'vit': os.environ.get('IMAGENET_C_OUT_VIT', '/mnt/newdata/liangyiwen/imagenet_c_feats'),
+    'rn50': os.environ.get('IMAGENET_C_OUT_RN50', '/mnt/newdata/liangyiwen/imagenet_c_feats_rn50'),
 }
-C_OUT_AUG63 = '/mnt/newdata/liangyiwen/imagenet_c_feats_aug63'  # 63-view 增强聚合（ViT）
+C_OUT_AUG63 = os.environ.get('IMAGENET_C_OUT_AUG63',
+                             '/mnt/newdata/liangyiwen/imagenet_c_feats_aug63')  # 63-view 聚合（ViT）
 
 # 评估顺序：Defo→Glas→Moti→Zoom→Snow→Fros→Fog→Brig→Cont→Elas→Pix→JPEG→Gauss→Shot→Impu
 CORDER = ['defocus_blur', 'glass_blur', 'motion_blur', 'zoom_blur', 'snow', 'frost', 'fog',
@@ -220,7 +236,7 @@ def c_run_online(corr, gpu, rank, sketch, shrink, eps, warmup=64, backbone='vit'
 
 def main_inc(a):
     import torchvision  # noqa: F401
-    sys.path.insert(0, '/home/liangyiwen/wufan/ADAPT')
+    sys.path.insert(0, ADAPT_ROOT)
     if a.mode == 'extract':
         model, preprocess, dev = c_load_model(a.gpu, a.backbone)
         for corr in (a.datasets or CORDER):
@@ -261,8 +277,14 @@ def main():
     ap.add_argument('--mu_alpha', type=float, default=0.0)
     ap.add_argument('--gate', type=float, default=0.0)
     ap.add_argument('--hard_assign', action='store_true')
+    ap.add_argument('--hard_weight', default='cos', choices=['cos', 'one', 'prob'],
+                    help='hard 分配时的样本权重：cos=E4原版 / one=纯hard(普通Welford) / prob=概率版')
+    ap.add_argument('--adapt_scale', type=float, default=None,
+                    help='adaptmul 温度覆盖（默认用 ADAPT_SCALE 逐域值）')
+    ap.add_argument('--pth_tier', default='GPT_w_Custom_class_emb',
+                    help='prompt 原型档位目录名（Custom/Ensemble/Img_temp/Mix…）')
     ap.add_argument('--cache', default='aug63', choices=['singlev', 'aug63'])
-    ap.add_argument('--shrink', default=None, choices=['iso', 'scale', 'add', 'trace', 'tfull', 'trade'],
+    ap.add_argument('--shrink', default=None, choices=['iso', 'scale', 'add', 'trace', 'tfull', 'trade', 'diag'],
                     help='默认按 family：inet5=add(ε=0.05)、inc=iso(ε=0)')
     ap.add_argument('--sigma_eps', type=float, default=None,
                     help='默认按 family：inet5=0.05、inc=0.0')
@@ -271,6 +293,8 @@ def main():
     ap.add_argument('--force', action='store_true')
     ap.add_argument('--level', default='5')
     args = ap.parse_args()
+    global PTH_TIER
+    PTH_TIER = args.pth_tier
     torch.cuda.set_device(args.gpu)
 
     # 生产默认按 family 区分：inet5=add 0.05、inc=iso 0.0
@@ -289,7 +313,8 @@ def main():
         acc = run_dataset(ds, args.gpu, args.rank, args.sketch,
                           args.warmup, args.fuse, args.rho, args.eta, args.cache,
                           args.shrink, args.sigma_eps, args.arch, args.alpha, args.norm,
-                          args.mu_alpha, args.gate, args.hard_assign)
+                          args.mu_alpha, args.gate, args.hard_assign, args.adapt_scale,
+                          args.hard_weight)
         per[ds] = acc
         print(f'[lr] {ds:16s} acc={acc:6.2f}%  rank={args.rank} fuse={args.fuse}'
               f'{f"/a={args.alpha}/{args.norm}" if args.fuse == "alphamix" else ""}'

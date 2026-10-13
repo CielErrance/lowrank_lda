@@ -122,6 +122,20 @@ class LowRankLDA(BaseMethod):
         A = Sk.t() / (ne ** 0.5)                                 # [D, k]
         lam = (Sk * Sk).sum(1) / ne                              # [k] = diag(A^T A)
         sigma2 = ((self.total_var.sum() / ne) - lam.sum()) / (self.D - k)
+        if self.sigma_shrink == 'diag':
+            # Diagonal residual: retain per-dimension variance discarded by FD.
+            # Woodbury remains exact with R=diag(residual), but its k×k core is dense.
+            residual = (self.total_var / ne) - (A * A).sum(1)
+            residual = residual.clamp_min(jit) + self.sigma_eps
+            B = A / residual.unsqueeze(1)                         # R⁻¹A
+            M = self._eye_k + A.t() @ B                            # I + AᵀR⁻¹A
+            Minv = torch.linalg.inv(M)
+            muB = mu @ B
+            xB = x @ B
+            muPx = (mu / residual) @ x.t() - (muB @ Minv) @ xB.t()
+            muPmu = ((mu * mu) / residual).sum(1) - ((muB @ Minv) * muB).sum(1)
+            out = muPx - 0.5 * muPmu.unsqueeze(1)
+            return out.squeeze(-1) if single else out
         # sigma^2 I shrinkage overrides (keep AA^T+sigma^2 I form, tune the I-term)
         if self.sigma_shrink == 'scale':
             sigma2 = sigma2 * (1.0 + self.sigma_eps)

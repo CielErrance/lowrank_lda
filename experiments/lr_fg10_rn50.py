@@ -8,8 +8,8 @@ datasets (no DOTA rho/eta schedule -> fuse none).
 import os, torch
 import numpy as np
 import sys
-sys.path.insert(0, '/home/liangyiwen/wufan/lowrank_selftrain')
-from method import LowRankLDASelfTrain
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from method import LowRankLDA
 
 W = '/home/liangyiwen/wufan'
 FE = f'{W}/ADAPT/feats/rn50'
@@ -29,7 +29,7 @@ def run_ds(ds, gpu, mu, rank=64, warmup=64):
         Wt = Wt.t()
     C, D = Wt.shape[1], feats.shape[1]
     N = feats.shape[0]
-    m = LowRankLDASelfTrain(C, D, dev, warmup, rank=rank, sketch_mult=2, mu_mode=mu)
+    m = LowRankLDA(C, D, dev, warmup, rank=rank, sketch_mult=2)
     correct = 0
     for t in range(N):
         x = feats[t]
